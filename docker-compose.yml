@@ -1,34 +1,31 @@
 services:
-  db:
-    image: postgres:16-alpine
+  mysql:
+    image: mysql:8.0
     environment:
-      POSTGRES_USER: ponto
-      POSTGRES_PASSWORD: ponto
-      POSTGRES_DB: ponto
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?defina no .env}
+      MYSQL_DATABASE: financeiro
+      MYSQL_USER: financeiro
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?defina no .env}
     ports:
-      - "5432:5432"
+      - "3307:3306" # 3307 no host para não brigar com um MySQL local
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ponto"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
+      timeout: 5s
       retries: 20
 
-  api:
-    build: ./backend
+  app:
+    build: .
     environment:
-      DATABASE_URL: postgres://ponto:ponto@db:5432/ponto
-      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no arquivo .env da raiz}
+      DATABASE_URL: mysql://financeiro:${MYSQL_PASSWORD}@mysql:3306/financeiro
+      JWT_SECRET: ${JWT_SECRET:?defina no .env}
+    ports:
+      - "3000:3000"
     depends_on:
-      db:
+      mysql:
         condition: service_healthy
 
-  web:
-    build: ./frontend
-    ports:
-      - "8080:80"
-    depends_on:
-      - api
-
 volumes:
-  pgdata:
+  mysql_data:

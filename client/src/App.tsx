@@ -18,6 +18,22 @@ import Settings from "@/pages/Settings";
 import NotFound from "@/pages/NotFound";
 import Login from "@/pages/Login";
 
+const withLayout = (Page: React.ComponentType) => {
+  const Wrapped = () => (
+    <FinanceDashboardLayout>
+      <Page />
+    </FinanceDashboardLayout>
+  );
+  return Wrapped;
+};
+const DashboardPage = withLayout(Dashboard);
+const TransactionsPage = withLayout(Transactions);
+const CategoriesPage = withLayout(Categories);
+const BudgetsPage = withLayout(Budgets);
+const GoalsPage = withLayout(Goals);
+const ReportsPage = withLayout(Reports);
+const SettingsPage = withLayout(Settings);
+
 function Router() {
   const { isAuthenticated, loading } = useAuth();
 
@@ -33,13 +49,13 @@ function Router() {
     <Switch>
       {isAuthenticated ? (
         <>
-          <Route path="/" component={() => <FinanceDashboardLayout><Dashboard /></FinanceDashboardLayout>} />
-          <Route path="/transactions" component={() => <FinanceDashboardLayout><Transactions /></FinanceDashboardLayout>} />
-          <Route path="/categories" component={() => <FinanceDashboardLayout><Categories /></FinanceDashboardLayout>} />
-          <Route path="/budgets" component={() => <FinanceDashboardLayout><Budgets /></FinanceDashboardLayout>} />
-          <Route path="/goals" component={() => <FinanceDashboardLayout><Goals /></FinanceDashboardLayout>} />
-          <Route path="/reports" component={() => <FinanceDashboardLayout><Reports /></FinanceDashboardLayout>} />
-          <Route path="/settings" component={() => <FinanceDashboardLayout><Settings /></FinanceDashboardLayout>} />
+          <Route path="/" component={DashboardPage} />
+          <Route path="/transactions" component={TransactionsPage} />
+          <Route path="/categories" component={CategoriesPage} />
+          <Route path="/budgets" component={BudgetsPage} />
+          <Route path="/goals" component={GoalsPage} />
+          <Route path="/reports" component={ReportsPage} />
+          <Route path="/settings" component={SettingsPage} />
         </>
       ) : (
         <Route component={Login} />

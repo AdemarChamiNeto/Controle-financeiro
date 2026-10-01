@@ -18,6 +18,12 @@ export default function Dashboard() {
     endDate: new Date(year, month, 0, 23, 59, 59),
   });
 
+  // últimos 6 meses para o gráfico de tendência (antes os valores eram fixos em zero)
+  const { data: lastSixMonths = [] } = trpc.transactions.list.useQuery({
+    startDate: new Date(year, month - 6, 1),
+    endDate: new Date(year, month, 0, 23, 59, 59),
+  });
+
   const { data: categories = [] } = trpc.categories.list.useQuery();
   const { data: budgets = [] } = trpc.budgets.list.useQuery({ year, month });
   const { data: goals = [] } = trpc.goals.list.useQuery();
@@ -39,15 +45,16 @@ export default function Dashboard() {
 
   // Prepare chart data
   const categoryData = useMemo(() => {
-    return categories.map((cat) => {
-      const catTransactions = transactions.filter((t) => t.categoryId === cat.id);
-      const amount = catTransactions.reduce((sum, t) => sum + t.amount, 0) / 100;
-      return {
-        name: cat.name,
-        value: amount,
-        color: cat.color,
-      };
-    });
+    // só despesas, e só categorias com gasto no mês (cores alinhadas com as fatias)
+    return categories
+      .map((cat) => {
+        const amount = transactions
+          .filter((t) => t.type === "expense" && t.categoryId === cat.id)
+          .reduce((sum, t) => sum + t.amount, 0) / 100;
+        return { name: cat.name, value: amount, color: cat.color };
+      })
+      .filter((d) => d.value > 0)
+      .sort((a, b) => b.value - a.value);
   }, [categories, transactions]);
 
   // Monthly trend data (last 6 months)
@@ -56,10 +63,16 @@ export default function Dashboard() {
     for (let i = 5; i >= 0; i--) {
       const d = new Date(year, month - 1 - i, 1);
       const monthStr = d.toLocaleDateString("pt-BR", { month: "short" });
-      data.push({ month: monthStr, income: 0, expenses: 0 });
+      const inMonth = lastSixMonths.filter((t) => {
+        const td = new Date(t.date);
+        return td.getFullYear() === d.getFullYear() && td.getMonth() === d.getMonth();
+      });
+      const sum = (type: "income" | "expense") =>
+        inMonth.filter((t) => t.type === type).reduce((acc, t) => acc + t.amount, 0) / 100;
+      data.push({ month: monthStr, income: sum("income"), expenses: sum("expense") });
     }
     return data;
-  }, [year, month]);
+  }, [year, month, lastSixMonths]);
 
   // Goals progress
   const goalsProgress = useMemo(() => {
@@ -156,11 +169,11 @@ export default function Dashboard() {
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
-                  data={categoryData.filter((d) => d.value > 0)}
+                  data={categoryData}
                   cx="50%"
                   cy="50%"
                   labelLine={false}
-                  label={({ name, value }) => `${name}: ${brl(value)}`}
+                  label={({ name, percent }) => `${name} ${Math.round((percent ?? 0) * 100)}%`}
                   outerRadius={100}
                   fill="#8884d8"
                   dataKey="value"
