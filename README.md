@@ -1,72 +1,125 @@
-# Controle Financeiro
+# Controle de Ponto
 
-Aplicação web de finanças pessoais. Você registra receitas e despesas por categoria, define orçamentos mensais com alerta de limite, acompanha metas de economia com projeção de prazo e vê tudo em dashboards e relatórios com exportação para CSV.
+Sistema pessoal de registro de ponto. Você bate o ponto, vê o espelho do mês com horas trabalhadas, saldo, faltas e feriados, e exporta o mês em CSV ou XML.
 
-**Stack:** React 19 · TypeScript · Vite · Tailwind + shadcn/ui · Recharts · Node.js + Express · tRPC · Drizzle ORM · MySQL · Vitest · Docker Compose
+**Stack:** React 18 + TypeScript + Vite · Redux Toolkit + RTK Query · Node.js + Express 5 + TypeScript · PostgreSQL · JWT · OpenAPI/Swagger · BrasilAPI (webservice de feriados) · Docker · GitHub Actions
+
+**Demo:** `https://SEU-APP.onrender.com` · **Documentação da API:** `https://SEU-APP.onrender.com/api/docs`
 
 ## Funcionalidades
 
-- **Autenticação própria:** cadastro e login com email e senha. A senha é guardada com hash bcrypt e a sessão é um JWT (HS256) em cookie `httpOnly` com `SameSite=Lax`.
-- **Transações:** CRUD de receitas e despesas, com filtro por período, categoria e tipo.
-- **Categorias:** personalizáveis, com cor e ícone.
-- **Orçamentos:** limite mensal por categoria e alerta ao atingir uma porcentagem configurável.
-- **Metas:** valor alvo, progresso e calculadora de quanto tempo falta com um aporte mensal.
-- **Relatórios:** gráficos de pizza, barras e linha, mais exportação em CSV.
-- **Isolamento por usuário:** toda consulta filtra pelo `userId` da sessão, e um usuário não acessa os dados de outro.
+- Batida de ponto em um clique ou marcação manual, com bloqueio de clique duplo (menos de 30 s entre batidas).
+- Espelho mensal com horas trabalhadas, jornada esperada e saldo por dia e no mês.
+- **Faltas:** dia útil sem marcação conta como falta e desconta a jornada inteira. Dias antes do cadastro e o dia de hoje não contam.
+- **Feriados nacionais:** vêm do webservice da [BrasilAPI](https://brasilapi.com.br/docs#tag/Feriados-Nacionais) e ficam em cache no banco, então a API externa só é chamada uma vez por ano. Trabalho em feriado ou fim de semana vira hora extra. Se a BrasilAPI estiver fora do ar, o espelho continua funcionando sem os feriados.
+- **Exportação** em CSV (abre no Excel, com BOM UTF-8) e em **XML**, para integração com outros sistemas.
+- Jornada diária configurável.
+- **Documentação interativa da API** com Swagger (OpenAPI 3) em `/api/docs`: dá para criar conta, autorizar com o token e testar cada rota pelo navegador.
+- **Segurança básica:** limite de tentativas no login e cadastro (contra força bruta), cabeçalhos HTTP de segurança (helmet), limite de tamanho do corpo da requisição e 404 em JSON para rotas inexistentes.
 
 ## Arquitetura
 
 ```
-client/          React (SPA) — páginas, componentes shadcn/ui, cliente tRPC
-server/
-  _core/         Express, contexto do tRPC, autenticação e cookies
-  routers.ts     procedures tRPC (auth, categorias, transações, orçamentos, metas)
-  db.ts          consultas com Drizzle + migrations na subida
-drizzle/         schema e migrations SQL
-shared/          constantes e tipos compartilhados entre front e back
+frontend/src/
+  store/            Redux Toolkit
+    api.ts          RTK Query — endpoints, cache com tags e logout automático em 401
+    authSlice.ts    token da sessão (persistido no localStorage)
+    reportSlice.ts  mês selecionado
+  Dashboard.tsx · Login.tsx
+backend/src/
+  app.ts            Express (separado do listen, para testar em memória) + Swagger, helmet, rate limit
+  openapi.ts        especificação OpenAPI 3 da API
+  calc.ts           regras de cálculo: pares entrada/saída, saldo, faltas, feriados
+  holidays.ts       cliente da BrasilAPI + cache no PostgreSQL
+  xml.ts            geração do espelho em XML
+  routes/           auth (JWT + bcrypt) e punches
 ```
 
-O tRPC compartilha os tipos do back-end com o front-end. Se uma procedure muda, o TypeScript acusa o erro no cliente em tempo de compilação. A validação de entrada fica no servidor, com Zod.
+### Decisões
+
+- **O tipo da marcação não é gravado.** Entrada, saída para almoço etc. são derivados da ordem das marcações no dia, então adicionar ou remover uma marcação nunca deixa o histórico inconsistente.
+- **Fuso fixo** `America/Sao_Paulo` para agrupar as marcações por dia.
+- **Dia incompleto** (número ímpar de marcações) não entra no saldo.
+- **O cache de feriados fica no banco, e não em memória.** Assim ele sobrevive a restart. Quando a consulta falha, só tenta de novo depois de 10 minutos.
+- **Estado do servidor no RTK Query, estado da interface em slices.** A lista do espelho, o usuário e as mutações ficam no cache do RTK Query, que invalida o espelho sozinho a cada batida. O mês selecionado e o token ficam em slices comuns.
 
 ## Rodando com Docker
 
 ```bash
-cp .env.example .env      # troque as senhas e gere o JWT_SECRET: openssl rand -hex 32
-docker compose up -d --build
+cp .env.example .env          # preencha JWT_SECRET (openssl rand -hex 32)
+docker compose up -d --build  # app em http://localhost:8080
 ```
-
-Acesse http://localhost:3000 e crie sua conta. As migrations rodam sozinhas quando o servidor sobe.
 
 ## Rodando em desenvolvimento
 
-Requisitos: Node 20.19+ e pnpm (`corepack enable`).
-
 ```bash
-cp .env.example .env
-docker compose up -d mysql      # MySQL na porta 3307
-pnpm install
-pnpm dev                        # http://localhost:3000 (API + Vite com hot reload)
+docker compose up -d db               # PostgreSQL
+cd backend && cp .env.example .env    # edite JWT_SECRET
+npm install && npm run dev            # API em :3001
+# em outro terminal
+cd frontend && npm install && npm run dev   # app em :5173 (proxy /api → :3001)
 ```
 
-| Script | O que faz |
-|---|---|
-| `pnpm dev` | servidor em modo desenvolvimento |
-| `pnpm check` | checagem de tipos (TypeScript) |
-| `pnpm test` | testes (Vitest) contra o banco do `DATABASE_URL` |
-| `pnpm build` / `pnpm start` | build de produção e execução |
-| `pnpm db:generate` | gera migration a partir do `drizzle/schema.ts` |
-| `pnpm db:migrate` | aplica as migrations |
+## Deploy (grátis): Neon + Render
+
+A imagem do `Dockerfile` da raiz junta tudo num serviço só: a API Express também entrega o front compilado.
+
+1. **Banco:** crie um projeto no [Neon](https://neon.tech). Copie a *connection string*, que termina com `?sslmode=require`.
+2. **App:** no [Render](https://render.com), vá em **New + → Blueprint** e escolha este repositório. O `render.yaml` já configura tudo.
+3. Quando ele pedir `DATABASE_URL`, cole a string do Neon. O `JWT_SECRET` é gerado sozinho.
+4. Em alguns minutos o app sobe em `https://<nome>.onrender.com`. As tabelas são criadas na primeira subida.
+
+> No plano grátis, o Render "dorme" depois de 15 minutos sem acesso. A primeira visita depois disso demora uns 30 segundos.
 
 ## Testes
 
-São 27 testes de integração nas procedures tRPC, rodando contra um MySQL real:
+```bash
+cd backend && npm test     # unitários (cálculo, XML, BrasilAPI com fetch falso)
+DATABASE_URL=postgres://ponto:ponto@localhost:5432/ponto npm test   # + integração da API
+cd frontend && npm test    # store Redux e tratamento de erros
+```
 
-- cadastro, login, senha errada, email duplicado e cookie adulterado;
-- bloqueio de rotas sem login;
-- CRUD de categorias, transações, orçamentos e metas;
-- isolamento de dados entre usuários.
+Os testes de integração sobem o Express em memória contra um PostgreSQL real. Eles cobrem cadastro e login, rotas protegidas, espelho, CSV, XML, bloqueio de batida dupla, isolamento entre usuários, limite de tentativas de login e se toda rota está documentada no Swagger. No GitHub Actions eles rodam com um container PostgreSQL a cada push.
 
-O GitHub Actions sobe um MySQL e roda checagem de tipos, migrations, testes e build a cada push (`.github/workflows/ci.yml`).
+## API (REST)
+
+| Método | Rota | O que faz |
+|---|---|---|
+| POST | `/api/auth/register` · `/api/auth/login` | cria conta / entra (retorna JWT) |
+| GET · PUT | `/api/auth/me` | dados do usuário / jornada diária |
+| POST | `/api/punches` | registra marcação (agora, ou `at` manual) |
+| DELETE | `/api/punches/:id` | remove marcação |
+| GET | `/api/punches/report?month=YYYY-MM` | espelho do mês (JSON) |
+| GET | `/api/punches/report.csv?month=YYYY-MM` | espelho em CSV |
+| GET | `/api/punches/report.xml?month=YYYY-MM` | espelho em XML |
+
+Exemplo de XML:
+
+```xml
+<espelhoPonto mes="2026-09" geradoEm="2026-09-30T12:00:00.000Z">
+  <colaborador><nome>Ana</nome><email>ana@exemplo.com</email></colaborador>
+  <dias>
+    <dia data="2026-09-01" tipo="normal" completo="true">
+      <marcacoes>
+        <marcacao tipo="Entrada" horario="08:00" instante="2026-09-01T11:00:00.000Z"/>
+        <marcacao tipo="Saída almoço" horario="12:00" instante="2026-09-01T15:00:00.000Z"/>
+      </marcacoes>
+      <trabalhadoMin>240</trabalhadoMin>
+      <esperadoMin>480</esperadoMin>
+      <saldoMin>-240</saldoMin>
+    </dia>
+    <dia data="2026-09-07" tipo="feriado" feriado="Independência do Brasil" completo="true">
+      ...
+    </dia>
+  </dias>
+  <totais trabalhadoMin="240" saldoMin="-240"/>
+</espelhoPonto>
+```
+
+## Próximos passos
+
+- Edição de marcação.
+- Feriados estaduais e municipais.
 
 ## Autor
 
