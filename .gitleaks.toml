@@ -1,0 +1,12 @@
+# Regras padrão do gitleaks + exceções só para valores fictícios conhecidos (testes e CI).
+# Qualquer outro valor parecido com segredo continua sendo apontado.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Senhas de teste e segredo do CI (não são segredos)"
+regexTarget = "secret"
+regexes = [
+  '''^senha-forte-123$''',
+  '''^ci-secret-com-pelo-menos-32-caracteres-ok$''',
+]
