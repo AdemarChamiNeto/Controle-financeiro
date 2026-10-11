@@ -1,8 +1,8 @@
-import { eq, and, gte, lte, desc, asc } from "drizzle-orm";
+import { eq, and, gte, lte, desc, asc, isNull, isNotNull, lt, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import path from "path";
-import { users, categories, transactions, budgets, goals } from "../drizzle/schema";
+import { users, categories, transactions, budgets, goals, userTotp, recoveryCodes } from "../drizzle/schema";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -115,4 +115,84 @@ export async function getGoalById(userId: number, goalId: number) {
   if (!db) return undefined;
   const result = await db.select().from(goals).where(and(eq(goals.userId, userId), eq(goals.id, goalId))).limit(1);
   return result.length > 0 ? result[0] : undefined;
+}
+
+async function requireDb() {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  return db;
+}
+
+export async function updatePasswordHash(id: number, passwordHash: string) {
+  const db = await requireDb();
+  await db.update(users).set({ passwordHash }).where(eq(users.id, id));
+}
+
+// ===== 2FA (TOTP) =====
+
+export async function getTotp(userId: number) {
+  const db = await requireDb();
+  const result = await db.select().from(userTotp).where(eq(userTotp.userId, userId)).limit(1);
+  return result[0];
+}
+
+export async function isTwoFactorEnabled(userId: number) {
+  const t = await getTotp(userId);
+  return Boolean(t?.enabledAt);
+}
+
+/** Grava (ou troca) o segredo ainda não confirmado. */
+export async function savePendingTotpSecret(userId: number, secretEncrypted: string) {
+  const db = await requireDb();
+  await db
+    .insert(userTotp)
+    .values({ userId, secretEncrypted })
+    .onDuplicateKeyUpdate({ set: { secretEncrypted, enabledAt: null, lastUsedStep: null } });
+}
+
+/** Ativa o 2FA e troca os códigos de recuperação, tudo na mesma transação. */
+export async function enableTotp(userId: number, step: number, recoveryHashes: string[]) {
+  const db = await requireDb();
+  await db.transaction(async (tx) => {
+    await tx.update(userTotp).set({ enabledAt: new Date(), lastUsedStep: step }).where(eq(userTotp.userId, userId));
+    await tx.delete(recoveryCodes).where(eq(recoveryCodes.userId, userId));
+    await tx.insert(recoveryCodes).values(recoveryHashes.map((codeHash) => ({ userId, codeHash })));
+  });
+}
+
+/** Grava o passo usado só se ninguém usou um igual ou maior no meio tempo (duas requisições ao mesmo tempo). */
+export async function claimTotpStep(userId: number, step: number) {
+  const db = await requireDb();
+  const [r] = await db
+    .update(userTotp)
+    .set({ lastUsedStep: step })
+    .where(and(eq(userTotp.userId, userId), isNotNull(userTotp.enabledAt), or(isNull(userTotp.lastUsedStep), lt(userTotp.lastUsedStep, step))));
+  return r.affectedRows === 1;
+}
+
+/** Marca o código de recuperação como usado; false se não existe ou já foi usado. */
+export async function useRecoveryCode(userId: number, codeHash: string) {
+  const db = await requireDb();
+  const [r] = await db
+    .update(recoveryCodes)
+    .set({ usedAt: new Date() })
+    .where(and(eq(recoveryCodes.userId, userId), eq(recoveryCodes.codeHash, codeHash), isNull(recoveryCodes.usedAt)));
+  return r.affectedRows === 1;
+}
+
+export async function recoveryCodesLeft(userId: number) {
+  const db = await requireDb();
+  const [r] = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(recoveryCodes)
+    .where(and(eq(recoveryCodes.userId, userId), isNull(recoveryCodes.usedAt)));
+  return Number(r.n);
+}
+
+export async function disableTotp(userId: number) {
+  const db = await requireDb();
+  await db.transaction(async (tx) => {
+    await tx.delete(userTotp).where(eq(userTotp.userId, userId));
+    await tx.delete(recoveryCodes).where(eq(recoveryCodes.userId, userId));
+  });
 }

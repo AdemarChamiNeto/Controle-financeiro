@@ -1,11 +1,19 @@
-import { COOKIE_NAME, SESSION_TTL_MS } from "@shared/const";
-import { createSessionToken, hashPassword, toPublicUser, verifyPassword } from "./_core/auth";
+import { COOKIE_NAME, PENDING_2FA_COOKIE, PENDING_2FA_TTL_MS, SESSION_TTL_MS } from "@shared/const";
+import {
+  DUMMY_HASH, createPending2faToken, createSessionToken, hashPassword, needsRehash, pending2faUser, toPublicUser, verifyPassword,
+} from "./_core/auth";
 import type { TrpcContext } from "./_core/context";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { decrypt, encrypt, generateRecoveryCodes, hashRecoveryCode } from "./_core/secrets";
 import { systemRouter } from "./_core/systemRouter";
+import { generateSecret, otpauthUrl, verifyCode } from "./_core/totp";
 import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
 import { z } from "zod";
-import { createUser, getUserByEmail, touchLastSignedIn, getDb, getUserCategories, getCategoryById, getUserTransactions, getTransactionById, getUserBudgets, getBudgetById, getUserGoals, getGoalById } from "./db";
+import {
+  createUser, getUserByEmail, getUserById, touchLastSignedIn, getDb, getUserCategories, getCategoryById, getUserTransactions,
+  getTransactionById, getUserBudgets, getBudgetById, getUserGoals, getGoalById, updatePasswordHash,
+  getTotp, isTwoFactorEnabled, savePendingTotpSecret, enableTotp, claimTotpStep, useRecoveryCode, recoveryCodesLeft, disableTotp,
+} from "./db";
 import { categories, transactions, budgets, goals } from "../drizzle/schema";
 import { eq, and } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -13,6 +21,20 @@ import { TRPCError } from "@trpc/server";
 async function startSession(ctx: TrpcContext, userId: number) {
   const token = await createSessionToken(userId);
   ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: SESSION_TTL_MS });
+}
+
+/**
+ * Confere o segundo fator: código de 6 dígitos do app (não pode ser um já usado) ou um código de
+ * recuperação (uso único). Atualiza o último passo usado / marca o código de recuperação como usado.
+ */
+async function checkSecondFactor(userId: number, code: string): Promise<boolean> {
+  const t = await getTotp(userId);
+  if (!t?.enabledAt) return false;
+  if (/^\d{6}$/.test(code)) {
+    const step = verifyCode(decrypt(t.secretEncrypted), code, new Date(), t.lastUsedStep ?? null);
+    return step !== null && (await claimTotpStep(userId, step));
+  }
+  return useRecoveryCode(userId, hashRecoveryCode(code));
 }
 
 export const appRouter = router({
@@ -39,27 +61,96 @@ export const appRouter = router({
         return { id };
       }),
 
+    /** Sem 2FA: abre a sessão e devolve o usuário. Com 2FA: só `twoFactorRequired`, e o login segue em `loginSecondFactor`. */
     login: publicProcedure
       .input(z.object({
         email: z.string().trim().toLowerCase().email(),
-        password: z.string().min(1),
+        password: z.string().min(1).max(200),
       }))
       .mutation(async ({ ctx, input }) => {
         const user = await getUserByEmail(input.email);
-        if (!user || !(await verifyPassword(input.password, user.passwordHash))) {
+        const ok = await verifyPassword(input.password, user?.passwordHash ?? DUMMY_HASH);
+        if (!user || !ok) {
           throw new TRPCError({ code: "UNAUTHORIZED", message: "Email ou senha incorretos" });
+        }
+        if (needsRehash(user.passwordHash)) await updatePasswordHash(user.id, await hashPassword(input.password));
+
+        if (await isTwoFactorEnabled(user.id)) {
+          ctx.res.cookie(PENDING_2FA_COOKIE, await createPending2faToken(user.id), {
+            ...getSessionCookieOptions(ctx.req),
+            maxAge: PENDING_2FA_TTL_MS,
+          });
+          return { twoFactorRequired: true as const };
         }
         await touchLastSignedIn(user.id);
         await startSession(ctx, user.id);
-        return toPublicUser(user);
+        return { twoFactorRequired: false as const, user: toPublicUser(user) };
+      }),
+
+    /** Segundo passo: código de 6 dígitos do app ou um código de recuperação (uso único). */
+    loginSecondFactor: publicProcedure
+      .input(z.object({ code: z.string().trim().min(6).max(20) }))
+      .mutation(async ({ ctx, input }) => {
+        const userId = await pending2faUser(ctx.req);
+        if (userId === null) throw new TRPCError({ code: "UNAUTHORIZED", message: "Faça o login de novo" });
+        if (!(await checkSecondFactor(userId, input.code))) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Código inválido" });
+        }
+        ctx.res.clearCookie(PENDING_2FA_COOKIE, getSessionCookieOptions(ctx.req));
+        await touchLastSignedIn(userId);
+        await startSession(ctx, userId);
+        const user = await getUserById(userId);
+        return { user: toPublicUser(user!), recoveryCodesLeft: await recoveryCodesLeft(userId) };
       }),
 
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      ctx.res.clearCookie(PENDING_2FA_COOKIE, { ...cookieOptions, maxAge: -1 });
       return {
         success: true,
       } as const;
+    }),
+
+    // ===== 2FA opcional, ativado pelo usuário em Configurações =====
+    twoFactor: router({
+      status: protectedProcedure.query(async ({ ctx }) => ({ enabled: await isTwoFactorEnabled(ctx.user.id) })),
+
+      /** Passo 1: gera o segredo e a URL do QR code. Só passa a valer depois de confirmado com um código. */
+      setup: protectedProcedure.mutation(async ({ ctx }) => {
+        if (await isTwoFactorEnabled(ctx.user.id)) throw new TRPCError({ code: "CONFLICT", message: "O 2FA já está ativo" });
+        const secret = generateSecret();
+        await savePendingTotpSecret(ctx.user.id, encrypt(secret));
+        return { secret, otpauthUrl: otpauthUrl(secret, ctx.user.email) };
+      }),
+
+      /** Passo 2: confirma com o primeiro código do app e devolve os códigos de recuperação (mostrados uma vez só). */
+      enable: protectedProcedure
+        .input(z.object({ code: z.string().trim().min(6).max(6) }))
+        .mutation(async ({ ctx, input }) => {
+          const t = await getTotp(ctx.user.id);
+          if (!t) throw new TRPCError({ code: "BAD_REQUEST", message: "Gere o QR code primeiro" });
+          if (t.enabledAt) throw new TRPCError({ code: "CONFLICT", message: "O 2FA já está ativo" });
+          const step = verifyCode(decrypt(t.secretEncrypted), input.code, new Date());
+          if (step === null) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Código inválido. Confira o horário do celular e tente de novo." });
+          }
+          const codes = generateRecoveryCodes();
+          await enableTotp(ctx.user.id, step, codes.map(hashRecoveryCode));
+          return { recoveryCodes: codes };
+        }),
+
+      /** Desativar pede a senha e um código (do app ou de recuperação): quem pegou só a sessão não consegue. */
+      disable: protectedProcedure
+        .input(z.object({ password: z.string().min(1).max(200), code: z.string().trim().min(6).max(20) }))
+        .mutation(async ({ ctx, input }) => {
+          const user = await getUserById(ctx.user.id);
+          if (!user || !(await verifyPassword(input.password, user.passwordHash)) || !(await checkSecondFactor(user.id, input.code))) {
+            throw new TRPCError({ code: "UNAUTHORIZED", message: "Senha ou código incorretos" });
+          }
+          await disableTotp(user.id);
+          return { success: true } as const;
+        }),
     }),
   }),
 

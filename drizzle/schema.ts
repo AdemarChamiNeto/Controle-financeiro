@@ -1,4 +1,5 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, boolean } from "drizzle-orm/mysql-core";
+import { sql } from "drizzle-orm";
+import { bigint, boolean, char, decimal, int, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Usuários com login próprio (email + senha com hash bcrypt).
@@ -92,3 +93,34 @@ export const goals = mysqlTable("goals", {
 
 export type Goal = typeof goals.$inferSelect;
 export type InsertGoal = typeof goals.$inferInsert;
+
+// ===== 2FA (TOTP) — tabelas novas já no padrão (snake_case, UUID, FK com CASCADE); as antigas ficam como estão =====
+
+/**
+ * Credencial do segundo fator, separada do perfil (users). Uma por usuário: user_id é a própria chave.
+ * enabled_at NULL = QR gerado, mas ainda não confirmado com um código.
+ */
+export const userTotp = mysqlTable("user_totp", {
+  // CASCADE: a credencial não tem sentido sem o usuário
+  userId: int("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  secretEncrypted: varchar("secret_encrypted", { length: 255 }).notNull(), // SENSÍVEL: AES-256-GCM com TOTP_ENCRYPTION_KEY
+  enabledAt: timestamp("enabled_at"),
+  lastUsedStep: bigint("last_used_step", { mode: "number" }), // impede reusar o mesmo código dentro dos 30 s
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(), // mantido pelo banco
+});
+
+export const recoveryCodes = mysqlTable(
+  "recovery_codes",
+  {
+    id: char("id", { length: 36 }).primaryKey().default(sql`(uuid())`),
+    // CASCADE: códigos só valem para a conta dona
+    userId: int("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    codeHash: char("code_hash", { length: 64 }).notNull(), // SENSÍVEL: SHA-256 do código, nunca o código
+    usedAt: timestamp("used_at"), // uso único
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().onUpdateNow().notNull(),
+  },
+  // índice único com user_id primeiro: garante código único por conta e serve de índice da FK
+  (t) => [uniqueIndex("recovery_codes_user_code").on(t.userId, t.codeHash)],
+);

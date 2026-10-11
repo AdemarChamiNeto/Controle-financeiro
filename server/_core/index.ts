@@ -1,10 +1,8 @@
 import "dotenv/config";
-import express from "express";
 import { createServer } from "http";
 import net from "net";
-import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { appRouter } from "../routers";
-import { createContext } from "./context";
+import { createApp } from "./app";
+import { assertEnv } from "./env";
 import { serveStatic, setupVite } from "./vite";
 import { runMigrations } from "../db";
 
@@ -28,21 +26,12 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  assertEnv(); // não sobe se faltar variável obrigatória
   await runMigrations();
   console.log("Migrations aplicadas");
 
-  const app = express();
+  const app = createApp();
   const server = createServer(app);
-  app.set("trust proxy", 1);
-  app.use(express.json({ limit: "1mb" }));
-  // tRPC API
-  app.use(
-    "/api/trpc",
-    createExpressMiddleware({
-      router: appRouter,
-      createContext,
-    })
-  );
   // development mode uses Vite, production mode uses static files
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);

@@ -1,6 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import TwoFactorSettings from "@/components/TwoFactorSettings";
 import { User, LogOut, Shield } from "lucide-react";
 
 export default function Settings() {
@@ -58,6 +59,7 @@ export default function Settings() {
               Sua senha é armazenada com hash bcrypt e a sessão fica em um cookie httpOnly que expira em 7 dias.
             </p>
           </div>
+          <TwoFactorSettings />
         </CardContent>
       </Card>
 

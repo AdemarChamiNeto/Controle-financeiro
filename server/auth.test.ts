@@ -51,8 +51,9 @@ describe("auth", () => {
     });
 
     const ok = await appRouter.createCaller(anonContext().ctx).auth.login({ email, password: "senha-forte-123" });
-    expect(ok.email).toBe(email);
-    expect(ok).not.toHaveProperty("passwordHash");
+    expect(ok.twoFactorRequired).toBe(false);
+    expect(ok.twoFactorRequired === false && ok.user.email).toBe(email);
+    expect(ok.twoFactorRequired === false && ok.user).not.toHaveProperty("passwordHash");
 
     await expect(
       appRouter.createCaller(anonContext().ctx).auth.login({ email, password: "senha-errada" })

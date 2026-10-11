@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { Loader2, Wallet } from "lucide-react";
 import { useState, type FormEvent } from "react";
 
-type Mode = "login" | "register";
+type Mode = "login" | "register" | "code";
 
 export default function Login() {
   const utils = trpc.useUtils();
@@ -14,19 +14,64 @@ export default function Login() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [error, setError] = useState("");
 
   const onSuccess = () => utils.auth.me.invalidate();
   const onError = (e: { message: string }) => setError(friendlyError(e.message));
-  const login = trpc.auth.login.useMutation({ onSuccess, onError });
+  const login = trpc.auth.login.useMutation({
+    // com 2FA ativo, a senha certa só leva para a tela do código
+    onSuccess: (r) => {
+      if (r.twoFactorRequired) {
+        setPassword("");
+        setMode("code");
+      } else onSuccess();
+    },
+    onError,
+  });
   const register = trpc.auth.register.useMutation({ onSuccess, onError });
-  const pending = login.isPending || register.isPending;
+  const secondFactor = trpc.auth.loginSecondFactor.useMutation({ onSuccess, onError });
+  const pending = login.isPending || register.isPending || secondFactor.isPending;
 
   function submit(e: FormEvent) {
     e.preventDefault();
     setError("");
     if (mode === "login") login.mutate({ email, password });
-    else register.mutate({ name, email, password });
+    else if (mode === "register") register.mutate({ name, email, password });
+    else secondFactor.mutate({ code: code.trim() });
+  }
+
+  if (mode === "code") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <Card className="w-full max-w-sm">
+          <CardHeader className="text-center">
+            <CardTitle className="text-2xl">Verificação em duas etapas</CardTitle>
+            <CardDescription>Digite o código de 6 dígitos do app autenticador, ou um dos seus códigos de recuperação.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={submit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="code">Código</Label>
+                <Input id="code" value={code} onChange={e => setCode(e.target.value)} required autoFocus autoComplete="one-time-code" placeholder="123456" />
+              </div>
+              {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+              <Button type="submit" className="w-full" disabled={pending}>
+                {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Confirmar
+              </Button>
+            </form>
+            <button
+              type="button"
+              className="mt-4 w-full text-center text-sm text-muted-foreground hover:text-foreground"
+              onClick={() => { setMode("login"); setCode(""); setError(""); }}
+            >
+              Voltar
+            </button>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (
