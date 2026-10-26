@@ -16,7 +16,7 @@ jobs:
           MYSQL_DATABASE: financeiro_test
         ports: ["3306:3306"]
         options: >-
-          --health-cmd="mysqladmin ping -h localhost"
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
           --health-interval=5s --health-timeout=5s --health-retries=20
     env:
       DATABASE_URL: mysql://root:root@127.0.0.1:3306/financeiro_test
