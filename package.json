@@ -72,7 +72,7 @@
     "tailwindcss-animate": "^1.0.7",
     "vaul": "^1.1.2",
     "wouter": "^3.3.5",
-    "zod": "^4.1.12",
+    "zod": "^4.6.6",
     "bcryptjs": "^3.0.2"
   },
   "devDependencies": {
